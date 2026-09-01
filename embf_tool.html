@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<head>
+
+<title>EMBF Tool</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=PT+Sans">
+
+<style>
+body {
+	font-family: 'PT Sans', serif;
+}
+button {
+	font-family: 'PT Sans', serif;
+}
+button.big {
+	font-size: 120%;
+}
+select {
+	font-family: 'PT Sans', serif;
+}
+div.small {
+	font-size: 80%;
+}
+td.tc {
+	text-align: center;
+	background-color: #c0c0c0;
+	font-size: 80%;
+}
+tr.a {
+	background-color: #e0e0e0;
+}
+th {
+	background-color: #c0c0c0;
+	font-size: 80%;
+}
+td.entry {
+	width: 50px;
+	text-align: right;
+}
+td.param {
+	width: 120px;
+	text-align: right;
+}
+textarea {
+    font-family: monospace;
+}
+</style>
+
+<script>
+function log( t ) {
+	if ( !document.getElementById( "show_log" ).checked ) {
+		return;
+	}
+	var ta = document.getElementById( "log" );
+	var d = new Date();
+	var dd = d.toLocaleTimeString();
+	ta.value = ta.value + "\n" + dd + ": " + t;
+	ta.scrollTop = ta.scrollHeight;
+	return dd;
+}
+function status( t ) {
+    document.getElementById( "status" ).innerHTML = "Web MIDI status: " + t;
+}
+function nybbleChar( n ) {
+	if ( n >= 10 ) {
+		return String.fromCharCode( 'A'.charCodeAt( 0 ) + n - 10 );
+	}
+	return String.fromCharCode( '0'.charCodeAt( 0 ) + n );
+}
+function makeMsgSysEx() {
+	var d = [0xF0, 0x00, 0x21, 0x27, 0x6D, 0x02]
+	var len = d.length
+	var str = ""
+	for ( var i = 0; i < len; ++i ) {
+		str += String.fromCharCode( d[i] );
+	} 
+	var text = "Hello!\nThis message\nwas sent from\nthe config tool.";
+	str += text;
+	str += String.fromCharCode( 0xF7 );
+	return str;
+}
+function dumpSysex( data, id, prefix ) {
+	if ( !document.getElementById( "show_log" ).checked ) {
+		return;
+	}
+	var len = data.length
+	var h = prefix
+	for ( var i = 0; i < len; ++i ) {
+		var b = data[ i ];
+		h += nybbleChar( b >> 4 );
+		h += nybbleChar( b & 0xf );
+		h += " ";
+		if ( ( i & 0xf ) === 0xf ) {
+			h += "\n";
+		}
+	} 
+	document.getElementById( id ).value = h;
+}
+function extractShort( data ) {
+	var v = ( data[0] << 14 ) | ( data[1] << 7 ) | ( data[2] );
+	v = ( v << 16 ) >> 16;
+	return v;
+}
+</script>
+
+</head>
+
+<body>
+
+<div class="small">
+At the time of writing this will work only in Google's <a href="http://www.google.com/chrome/">Chrome</a> browser. Chrome may block SysEx access if you run this from a website, in which case download the html file locally and run it from there.
+</div>
+<div class="small" id="status"></div>
+<p>
+
+<!--<button onclick="sendMsg()">Send Msg</button>-->
+<label for="midioutput">Send to MIDI port:</label>
+<select id="midioutput" onchange='changeOutput()' accesskey="o"></select>
+<label for="midiinput">Listen on MIDI port: </label>
+<select id="midiinput" onchange='changeInput()' accesskey="i"></select>
+<label for="sysExId">SysEx ID: </label>
+<select id="sysExId" onchange='changeSysExId()' accesskey="s">
+<script>
+for ( let i=0; i<127; ++i ) {
+	document.write( "<option value=" + i + ">" + i + "</option>" );
+}
+</script>
+</select>
+<label for="show_log">Log:</label><input id='show_log' type='checkbox' onchange='showLog()'>
+<p>
+<textarea rows=5 cols=50 id="log" class="log" readOnly></textarea>
+<textarea rows=5 cols=45 name="text" id="txSysex" class="log"></textarea>
+<textarea rows=5 cols=45 name="text" id="rxSysex" class="log"></textarea>
+<p>
+<div id="connected"></div>
+<p>
+<table class='entry'>
+<tbody>
+<tr class="entry">
+<td class="param">Level 1</td><td class="entry" id="entry0"></td><td class="unit" id="unit0"></td>
+<td class="param">Attack</td><td class="entry" id="entry5"></td><td class="unit" id="unit5"></td>
+</tr>
+<tr class="entry">
+<td class="param">Level 2</td><td class="entry" id="entry1"></td><td class="unit" id="unit1"></td>
+<td class="param">Release</td><td class="entry" id="entry6"></td><td class="unit" id="unit6"></td>
+</tr>
+<tr class="entry">
+<td class="param">Level 3</td><td class="entry" id="entry2"></td><td class="unit" id="unit2"></td>
+<td class="param">Layer</td><td class="entry" id="entry7"></td><td class="unit" id="unit7"></td>
+</tr>
+<tr class="entry">
+<td class="param">Detune</td><td class="entry" id="entry3"></td><td class="unit" id="unit3"></td>
+<td class="param">Heads</td><td class="entry" id="entry8"></td><td class="unit" id="unit8"></td>
+</tr>
+<tr class="entry">
+<td class="param">Mix</td><td class="entry" id="entry4"></td><td class="unit" id="unit4"></td>
+<td class="param">Fade</td><td class="entry" id="entry9"></td><td class="unit" id="unit9"></td>
+</tr>
+</tbody>
+</table>
+<p>
+<button onclick='erasePreset()'>Erase preset</button>
+<button onclick="reboot(0)">Reboot</button>
+<button onclick="reqVersion()" accesskey='v'>Check firmware and s/n</button>
+
+<script>
+var midi, data;
+const embfMIDIInKey = "embfMIDIInKey";
+const embfMIDIOutKey = "embfMIDIOutKey";
+const embfSysExKey = "embfSysExKey";
+const defaultDntPortName = "Forever";
+var connected = 0;
+
+var dexInPortName = defaultDntPortName;
+var dexOutPortName = defaultDntPortName;
+var sysExId;
+
+// debugging only:
+// localStorage.removeItem(embfMIDIInKey);
+// localStorage.removeItem(embfMIDIOutKey);
+// localStorage.removeItem(embfSysExKey);
+
+if(!localStorage.getItem(embfMIDIInKey)) {  // No input stored
+// alert("saving in port");
+    localStorage.setItem(embfMIDIInKey, defaultDntPortName);
+} 
+else {
+    dexInPortName = localStorage.getItem(embfMIDIInKey);
+// alert("retrieved in port name = " + dexInPortName);
+}
+
+if(!localStorage.getItem(embfMIDIOutKey)) {  // No output stored
+// alert("saving out port name");
+    localStorage.setItem(embfMIDIOutKey, defaultDntPortName);
+} 
+else {
+    dexOutPortName = localStorage.getItem(embfMIDIOutKey);
+// alert("retrieved out port name = " + dexOutPortName);
+}
+
+if(!localStorage.getItem(embfSysExKey)) {  // No system exclusive ID stored
+// alert("saving system exclusive ID);
+    localStorage.setItem(embfSysExKey, 0);
+} 
+else {
+    sysExId = localStorage.getItem(embfSysExKey);
+// alert("retrieved system exclusive ID = " + sysExId);
+}
+
+if ( navigator.requestMIDIAccess ) {
+    navigator.requestMIDIAccess ( {
+        sysex: true
+    } ).then(onMIDISuccess, onMIDIFailure);
+} else {
+    status("No MIDI support in your browser.");
+}
+function onMIDISuccess(midiAccess) {
+	log( "midi access granted" );
+    status("OK");
+    midi = midiAccess;
+    midi.onstatechange = onStateChange;
+    onStateChange(null);
+    setTimeout( getNext, 100 );
+    setTimeout( getNextInfo, 200 );
+}
+function onStateChange(e) {
+    let str = "";
+    let dex = -1;
+    let inputs = midi.inputs.values();
+
+    for ( var input = inputs.next(); input && !input.done; input = inputs.next() ) {
+	    str += "<option value='" + input.value.id + "'>" + input.value.name + "</option>";
+	    if ( input.value.name == dexInPortName) {
+		    dex = input.value.id;
+	    }
+    }
+    document.getElementById( "midiinput" ).innerHTML = str
+    if ( dex != -1 ) {
+	    document.getElementById( "midiinput" ).value = dex;
+    }
+
+    str = "";
+    dex = -1;
+    let outputs = midi.outputs.values();
+
+    for ( var output = outputs.next(); output && !output.done; output = outputs.next() ) {
+	    str += "<option value='" + output.value.id + "'>" + output.value.name + "</option>";
+	    if ( output.value.name == dexOutPortName) {
+		    dex = output.value.id;
+	    }
+    }
+    document.getElementById( "midioutput" ).innerHTML = str
+    if ( dex != -1 ) {
+	    document.getElementById( "midioutput" ).value = dex;
+    }
+
+	document.getElementById("sysExId").selectedIndex = sysExId;
+	changeInput();
+}
+function onMIDIFailure(e) {
+	log( "midi access failure" );
+    status("No access to MIDI devices or your browser doesn't support WebMIDI API.");
+}
+function changeInput() {
+    let inputs = midi.inputs.values();
+
+    for ( var input = inputs.next(); input && !input.done; input = inputs.next() ) {
+    	input.value.onmidimessage = "";
+    }
+	var input = midi.inputs.get( document.getElementById( "midiinput" ).value );
+	input.onmidimessage = onMIDIMessage;
+
+	// Save the current port setting
+	let inputSelector = document.getElementById("midiinput"); 
+	let selectedPortName = inputSelector.options[inputSelector.selectedIndex].text;
+    localStorage.setItem(embfMIDIInKey, selectedPortName);
+
+	let output = midi.outputs.get( document.getElementById( "midioutput" ).value );
+
+	let arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x48, 0xF7 ];
+	output.send( arr );
+	let dd = log( "sent unit strings request to Forever" );
+	dumpSysex( arr, "txSysex", dd+"\n" );
+}
+function changeOutput() {
+	let outputSelector = document.getElementById("midioutput"); 
+	let selectedPortName = outputSelector.options[outputSelector.selectedIndex].text;
+    localStorage.setItem(embfMIDIOutKey, selectedPortName);
+}
+
+function changeSysExId() {
+	sysExId = document.getElementById( "sysExId" ).value;
+   localStorage.setItem(embfSysExKey, sysExId);
+}
+function onMIDIMessage(message) {
+    data = message.data;
+    var header = [ 240, 0, 33, 39, 0x6D, sysExId ];
+    for ( var i=0; i<6; ++i ) {
+    	if ( header[i] != data[i] ) {
+    		return;
+    	}
+    }
+//	var dd = log( "received sysex (" + data.length + " bytes)" );
+//	dumpSysex( data, "rxSysex", dd+"\n" );
+	let rxSlot = data[7];
+	if ( data[6] == 0x45 ) {
+		let p = extractShort( data.slice( 8, 11 ) );
+		let v = extractShort( data.slice( 11, 14 ) );
+		for ( let i=0; i<10; ++i ) {
+			if ( potTable[i][0] == rxSlot && potTable[i][1] == p ) {
+				document.getElementById( "entry" + i ).innerHTML = v / scalings[i];
+			}
+		}
+		connected = 10;
+		document.getElementById( 'connected' ).innerHTML = "Connected";
+		document.getElementById( 'connected' ).style = "width: 200px; background-color: #00e000;";
+	}
+	else if ( data[6] == 0x50 ) {
+		data = data.slice( 8, -1 );
+		let p = extractShort( data.slice( 0, 3 ) );
+		let name = "";
+		for ( let i = 0; i < 32; ++i ) {
+			let n = data[3+i];
+			if ( n == 0 ) {
+				break;
+			}
+			name += String.fromCharCode( n );
+		}
+		for ( let i=0; i<10; ++i ) {
+			if ( potTable[i][0] == rxSlot && potTable[i][1] == p ) {
+				document.getElementById( "entry" + i ).innerHTML = name;
+			}
+		}
+		connected = 10;
+	}
+	else if ( data[6] == 0x43 ) {
+		data = data.slice( 8, -1 );
+		let p = extractShort( data.slice( 0, 3 ) );
+		let min = extractShort( data.slice( 3, 6 ) );
+		let max = extractShort( data.slice( 6, 9 ) );
+		let def = extractShort( data.slice( 9, 12 ) );
+		let unit = data[12];
+		let name = "";
+		let i;
+		for ( i = 0; i < 24; ++i ) {
+			var n = data[13+i];
+			if ( n == 0 ) {
+				++i;
+				break;
+			}
+			name += String.fromCharCode( n );
+		}
+		let scaling = 1;
+		let ioFlags = 0;
+		if ( 13+i < data.length ) {
+			let v = data[13+i];
+			scaling = 10 ** ( v & 3 );
+			ioFlags = ( v >> 2 ) & 0xf;
+		}
+		for ( let i=0; i<10; ++i ) {
+			if ( potTable[i][0] == rxSlot && potTable[i][1] == p ) {
+				if ( unit > 0 && (unit-1) < unitStrings.length ) {
+					document.getElementById( "unit" + i ).innerHTML = unitStrings[ unit-1 ];
+				}
+				scalings[i] = scaling;
+				units[i] = unit;
+			}
+		}
+	} else if ( data[6] == 0x48 ) {
+		processUnitStrings( data.slice( 7, -1 ) );
+	}
+	else if ( data[6] == 0x32 ) {
+		// version string
+		let d = new Date();
+		let dd = d.toLocaleTimeString();
+	    let str = String.fromCharCode.apply( null, data.slice( 7, -1 ) );
+		document.getElementById( "rxSysex" ).value = ( dd + "\n-----\n" + str );
+	    let bits = str.split( '\0' );
+	    str = "Firmware: " + bits[0] + " " + bits[1] + "\nSerial number: " + bits[2];
+		window.alert( str );
+	}
+}
+
+var scalings = [ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ];
+var units = [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ];
+
+var unitStrings = [];
+function processUnitStrings( data ) {
+	let num = data[0];
+	let c = 1;
+	unitStrings = [];
+    for (let j = 0; j < num; ++j ) {
+		let name = "";
+		for ( var i = 0; i < 100; ++i ) {
+			let n = data[c++];
+			if ( n == 0 ) {
+				break;
+			}
+			name += String.fromCharCode( n );
+		}
+		unitStrings.push( name );
+	}
+}
+
+var nextP = 0;
+var potTable = [
+		// mix 1, mix 2, mix 3, sub %, xfade
+		[ 1, 6 ], [ 1, 11 ], [ 1, 16 ], [ 0, 20 ], [ 2, 7 ],
+		// attack, release, dub time, play heads, dub fade
+		[ 0, 7 ], [ 0, 8 ], [ 0, 16 ], [ 0, 10 ], [ 0, 15 ],
+	];
+
+function getNext() {
+	let slot = potTable[ nextP ][0];
+	let p = potTable[ nextP ][1];
+	let unit = units[ nextP ];
+	nextP = nextP + 1;
+	if ( nextP >= 10 ) {
+		nextP = 0;
+	}
+
+	let output = midi.outputs.get( document.getElementById( "midioutput" ).value );
+	let arr;
+	if ( unit == 16 ) {
+		arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x50, slot, (p>>14)&3, (p>>7)&0x7f, p&0x7f, 0xF7 ];
+	}
+	else {
+		arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x45, slot, (p>>14)&3, (p>>7)&0x7f, p&0x7f, 0xF7 ];
+	}
+	output.send( arr );
+
+    setTimeout( getNext, 5 );
+
+	if ( connected > 0 ) {
+		connected -= 5;
+		if ( connected <= 0 ) {
+			document.getElementById( 'connected' ).innerHTML = "Not connected";
+			document.getElementById( 'connected' ).style = "width: 200px; background-color: #e00000;";
+			document.getElementById( "rxSysex" ).value = "";
+		}
+	}
+}
+
+var nextInfo = 0;
+
+function getNextInfo() {
+	let slot = potTable[ nextInfo ][0];
+	let p = potTable[ nextInfo ][1];
+	nextInfo = nextInfo + 1;
+	if ( nextInfo >= 10 ) {
+		nextInfo = 0;
+	    setTimeout( getNextInfo, 5000 );
+	} else {
+	    setTimeout( getNextInfo, 5 );
+	}
+
+	let output = midi.outputs.get( document.getElementById( "midioutput" ).value );
+	let arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x43, slot, (p>>14)&3, (p>>7)&0x7f, p&0x7f, 0xF7 ];
+	output.send( arr );
+}
+
+function erasePreset() {
+	let output = midi.outputs.get( document.getElementById( "midioutput" ).value );
+	let arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x7E, 0xF7 ];
+	output.send( arr );
+	let dd = log( "sent erase preset request to Forever" );
+	dumpSysex( arr, "txSysex", dd+"\n" );
+}
+
+const dntLogKey = "embfShowLog";
+
+function updateLogVisibility() {
+	let vis = document.getElementById( "show_log" ).checked ? "inline" : "none";
+	let elts = document.getElementsByClassName( 'log' );
+	for ( let e of elts ) {
+    	e.style.display = vis;
+	}
+}
+
+function showLog() {
+	updateLogVisibility();
+    localStorage.setItem( dntLogKey, document.getElementById( "show_log" ).checked );
+}
+
+if ( !localStorage.getItem( dntLogKey ) ) {
+    localStorage.setItem( dntLogKey, 'false' );
+}
+
+document.getElementById( 'show_log' ).checked = ( localStorage.getItem( dntLogKey ) != 'false' );
+updateLogVisibility();
+
+function reqVersion() {
+	let output = midi.outputs.get( document.getElementById( "midioutput" ).value );
+	let arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x22, 0xF7 ];
+	output.send( arr );
+	let dd = log( "sent version request to Forever" );
+	dumpSysex( arr, "txSysex", dd+"\n" );
+}
+
+function reboot( bootloader ) {
+	let output = midi.outputs.get( document.getElementById( "midioutput" ).value );
+	let arr = [ 0xF0, 0x00, 0x21, 0x27, 0x6D, sysExId, 0x7F ];
+	if ( bootloader ) {
+		arr.push( 0x7F );
+	}
+	arr.push( 0xF7 );
+	output.send( arr );
+	let dd = log( "sent reboot request to Forever" );
+	dumpSysex( arr, "txSysex", dd+"\n" );
+}
+
+</script>
+
+</body>
