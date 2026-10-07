@@ -375,7 +375,9 @@ function onMIDIMessage(message) {
 	    let str = String.fromCharCode.apply( null, data.slice( 7, -1 ) );
 		document.getElementById( "rxSysex" ).value = ( dd + "\n-----\n" + str );
 	    let bits = str.split( '\0' );
-	    str = "Firmware: " + bits[0] + " " + bits[1] + "\nSerial number: " + bits[2];
+	    if ( bits.length > 2 ) {
+		    str = "Firmware: " + bits[0] + " " + bits[1] + "\nSerial number: " + bits[2];
+		}
 		window.alert( str );
 	}
 }
